@@ -87,15 +87,12 @@ function createPentagramPolygon(pts) {
 }
 }
 
-function drawPentagram() {
-    if (pentagramLayer) map.removeLayer(pentagramLayer);
-    
-    const polygonPoints = points.length === maxPoints 
-        ? createPentagramPolygon(points)
-        : [...points, points[0]];
-    
-    const latLngs = polygonPoints.map(p => [p[1], p[0]]);
-    
+function createPentagramPolygon(pts) {
+    // Create convex hull to ensure solid filled polygon
+    const points = turf.featureCollection(pts.map(p => turf.point(p)));
+    const hull = turf.convex(points);
+    return hull.geometry.coordinates[0];
+}
     pentagramLayer = L.polygon(latLngs, {
         color: '#764ba2',
         weight: 3,
@@ -310,3 +307,4 @@ function convertToCSV(geojson) {
     return rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
 
 }
+
