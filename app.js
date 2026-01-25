@@ -79,17 +79,12 @@ function clearPoints() {
 clearBtn.addEventListener('click', clearPoints);
 
 function createPentagramPolygon(pts) {
-    // Create star polygon by connecting every other point
-    const n = pts.length;
-    const starPoints = [];
-    const step = Math.floor(n / 2);
-    
-    for (let i = 0; i < n; i++) {
-        starPoints.push(pts[(i * step) % n]);
-    }
-    starPoints.push(starPoints[0]); // Close the polygon
-    
-    return starPoints;
+    // Create a simple closed polygon (not a star)
+    // Just connect points in order and close it
+    const polygonPoints = [...pts];
+    polygonPoints.push(pts[0]); // Close the polygon
+    return polygonPoints;
+}
 }
 
 function drawPentagram() {
@@ -313,4 +308,5 @@ function convertToCSV(geojson) {
         ]);
     });
     return rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+
 }
