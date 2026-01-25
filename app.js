@@ -8,7 +8,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 // State
 let points = [];
 let markers = [];
-let pentagramLayer = null;
+let polygonLayer = null;
 let dataLayer = null;
 let extractedData = null;
 let maxPoints = 5;
@@ -51,10 +51,7 @@ map.on('click', (e) => {
     markers.push(marker);
     
     updateUI();
-    
-    if (points.length >= 3) {
-        drawPentagram();
-    }
+    drawPolygon();
 });
 
 function updateUI() {
@@ -66,9 +63,9 @@ function clearPoints() {
     points = [];
     markers.forEach(m => map.removeLayer(m));
     markers = [];
-    if (pentagramLayer) map.removeLayer(pentagramLayer);
+    if (polygonLayer) map.removeLayer(polygonLayer);
     if (dataLayer) map.removeLayer(dataLayer);
-    pentagramLayer = null;
+    polygonLayer = null;
     dataLayer = null;
     extractedData = null;
     statsDiv.style.display = 'none';
@@ -78,26 +75,37 @@ function clearPoints() {
 
 clearBtn.addEventListener('click', clearPoints);
 
-function createPentagramPolygon(pts) {
-    // Create a simple closed polygon (not a star)
-    // Just connect points in order and close it
-    const polygonPoints = [...pts];
-    polygonPoints.push(pts[0]); // Close the polygon
-    return polygonPoints;
-}
+function getPolygonCoordinates() {
+    if (points.length < 3) return null;
+    
+    // Sort points clockwise around centroid for proper polygon
+    const centroid = points.reduce((acc, p) => [acc[0] + p[0], acc[1] + p[1]], [0, 0]);
+    centroid[0] /= points.length;
+    centroid[1] /= points.length;
+    
+    const sortedPoints = [...points].sort((a, b) => {
+        const angleA = Math.atan2(a[1] - centroid[1], a[0] - centroid[0]);
+        const angleB = Math.atan2(b[1] - centroid[1], b[0] - centroid[0]);
+        return angleA - angleB;
+    });
+    
+    // Close the polygon
+    return [...sortedPoints, sortedPoints[0]];
 }
 
-function createPentagramPolygon(pts) {
-    // Create convex hull to ensure solid filled polygon
-    const points = turf.featureCollection(pts.map(p => turf.point(p)));
-    const hull = turf.convex(points);
-    return hull.geometry.coordinates[0];
-}
-    pentagramLayer = L.polygon(latLngs, {
+function drawPolygon() {
+    if (polygonLayer) map.removeLayer(polygonLayer);
+    
+    if (points.length < 3) return;
+    
+    const coords = getPolygonCoordinates();
+    const latLngs = coords.map(p => [p[1], p[0]]);
+    
+    polygonLayer = L.polygon(latLngs, {
         color: '#764ba2',
         weight: 3,
         fillColor: '#667eea',
-        fillOpacity: 0.2
+        fillOpacity: 0.3
     }).addTo(map);
 }
 
@@ -117,7 +125,8 @@ extractBtn.addEventListener('click', async () => {
     progressFill.textContent = '0%';
     
     try {
-        const polygon = turf.polygon([createPentagramPolygon(points)]);
+        const coords = getPolygonCoordinates();
+        const polygon = turf.polygon([coords]);
         const bbox = turf.bbox(polygon);
         
         const query = buildOverpassQuery(bbox, categories);
@@ -143,7 +152,7 @@ extractBtn.addEventListener('click', async () => {
         
     } catch (error) {
         console.error('Extraction error:', error);
-        alert('Error extracting data. Please try again.');
+        alert('Error extracting data: ' + error.message);
     } finally {
         extractBtn.disabled = false;
         setTimeout(() => progressDiv.style.display = 'none', 1000);
@@ -178,8 +187,9 @@ function processOSMData(data, polygon) {
         } else if (element.type === 'way' && element.nodes) {
             const coords = element.nodes.map(id => nodes[id]).filter(Boolean);
             if (coords.length >= 2) {
-                geometry = coords[0][0] === coords[coords.length-1][0] && 
-                           coords[0][1] === coords[coords.length-1][1] && coords.length >= 4
+                const isClosed = coords[0][0] === coords[coords.length-1][0] && 
+                                 coords[0][1] === coords[coords.length-1][1] && coords.length >= 4;
+                geometry = isClosed
                     ? { type: 'Polygon', coordinates: [coords] }
                     : { type: 'LineString', coordinates: coords };
             }
@@ -192,15 +202,26 @@ function processOSMData(data, polygon) {
                 geometry
             };
             
-            // Check if within pentagram
+            // Check if within polygon
             try {
-                const point = geometry.type === 'Point' 
-                    ? turf.point(geometry.coordinates)
-                    : turf.centroid(feature);
+                let point;
+                if (geometry.type === 'Point') {
+                    point = turf.point(geometry.coordinates);
+                } else if (geometry.type === 'LineString') {
+                    point = turf.midpoint(
+                        turf.point(geometry.coordinates[0]),
+                        turf.point(geometry.coordinates[Math.floor(geometry.coordinates.length / 2)])
+                    );
+                } else {
+                    point = turf.centroid(feature);
+                }
+                
                 if (turf.booleanPointInPolygon(point, polygon)) {
                     features.push(feature);
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.warn('Error checking feature:', e);
+            }
         }
     });
     
@@ -292,9 +313,14 @@ function convertToCSV(geojson) {
     const rows = [['id', 'type', 'name', 'lat', 'lon', 'tags']];
     geojson.features.forEach(f => {
         const props = f.properties;
-        const coords = f.geometry.type === 'Point' 
-            ? f.geometry.coordinates 
-            : turf.centroid(f).geometry.coordinates;
+        let coords;
+        try {
+            coords = f.geometry.type === 'Point' 
+                ? f.geometry.coordinates 
+                : turf.centroid(f).geometry.coordinates;
+        } catch (e) {
+            coords = [0, 0];
+        }
         rows.push([
             props.id,
             f.geometry.type,
@@ -305,6 +331,6 @@ function convertToCSV(geojson) {
         ]);
     });
     return rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
-
 }
+
 
