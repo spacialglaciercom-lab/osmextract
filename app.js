@@ -384,7 +384,15 @@ extractBtn.addEventListener('click', async () => {
         }
         
         if (!data) {
-            throw new Error(`All endpoints failed. Last error: ${lastError?.message || 'Unknown error'}`);
+            // Offer to use sample data for testing
+            const useSampleData = confirm(`All Overpass API endpoints failed. Last error: ${lastError?.message || 'Unknown error'}\n\nWould you like to use sample data for testing instead?`);
+            
+            if (useSampleData) {
+                data = generateSampleOSMData(bbox);
+                showToast('Using sample data for testing', 'info', 3000);
+            } else {
+                throw new Error(`All endpoints failed. Last error: ${lastError?.message || 'Unknown error'}`);
+            }
         }
         
         progressFill.style.width = '80%';
@@ -433,6 +441,114 @@ function buildOverpassQuery(bbox, categories) {
     }).join('');
     
     return `[out:json][timeout:60];(${filters});out body;>;out skel qt;`;
+}
+
+function generateSampleOSMData(bbox) {
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+    const latRange = maxLat - minLat;
+    const lngRange = maxLng - minLng;
+    
+    const elements = [];
+    let nodeId = 1000000;
+    let wayId = 2000000;
+    
+    // Generate sample nodes (POIs)
+    for (let i = 0; i < 15; i++) {
+        const lat = centerLat + (Math.random() - 0.5) * latRange * 0.8;
+        const lng = centerLng + (Math.random() - 0.5) * lngRange * 0.8;
+        
+        const amenityTypes = ['restaurant', 'cafe', 'shop', 'bank', 'pharmacy', 'hospital', 'school', 'park'];
+        const amenity = amenityTypes[Math.floor(Math.random() * amenityTypes.length)];
+        
+        elements.push({
+            type: 'node',
+            id: nodeId++,
+            lat: lat,
+            lon: lng,
+            tags: {
+                amenity: amenity,
+                name: `Sample ${amenity} ${i + 1}`
+            }
+        });
+    }
+    
+    // Generate sample ways (roads)
+    for (let i = 0; i < 8; i++) {
+        const startLat = centerLat + (Math.random() - 0.5) * latRange * 0.6;
+        const startLng = centerLng + (Math.random() - 0.5) * lngRange * 0.6;
+        
+        const wayNodes = [];
+        const numNodes = 3 + Math.floor(Math.random() * 4);
+        
+        for (let j = 0; j < numNodes; j++) {
+            const lat = startLat + j * (Math.random() - 0.5) * latRange * 0.1;
+            const lng = startLng + j * (Math.random() - 0.5) * lngRange * 0.1;
+            
+            elements.push({
+                type: 'node',
+                id: nodeId,
+                lat: lat,
+                lon: lng
+            });
+            
+            wayNodes.push(nodeId);
+            nodeId++;
+        }
+        
+        const roadTypes = ['primary', 'secondary', 'residential', 'service'];
+        const highway = roadTypes[Math.floor(Math.random() * roadTypes.length)];
+        
+        elements.push({
+            type: 'way',
+            id: wayId++,
+            nodes: wayNodes,
+            tags: {
+                highway: highway,
+                name: `Sample ${highway} Street ${i + 1}`
+            }
+        });
+    }
+    
+    // Generate sample buildings
+    for (let i = 0; i < 10; i++) {
+        const centerLat2 = centerLat + (Math.random() - 0.5) * latRange * 0.7;
+        const centerLng2 = centerLng + (Math.random() - 0.5) * lngRange * 0.7;
+        const size = 0.0001; // Small building size
+        
+        const buildingNodes = [];
+        const corners = [
+            [centerLat2 - size, centerLng2 - size],
+            [centerLat2 - size, centerLng2 + size],
+            [centerLat2 + size, centerLng2 + size],
+            [centerLat2 + size, centerLng2 - size],
+            [centerLat2 - size, centerLng2 - size] // Close the polygon
+        ];
+        
+        corners.forEach(([lat, lng]) => {
+            elements.push({
+                type: 'node',
+                id: nodeId,
+                lat: lat,
+                lon: lng
+            });
+            buildingNodes.push(nodeId);
+            nodeId++;
+        });
+        
+        elements.push({
+            type: 'way',
+            id: wayId++,
+            nodes: buildingNodes,
+            tags: {
+                building: 'yes',
+                name: `Sample Building ${i + 1}`
+            }
+        });
+    }
+    
+    return { elements };
 }
 
 function processOSMData(data, polygon) {
@@ -620,19 +736,78 @@ function downloadFile(content, filename, type) {
 }
 
 function convertToOSMXML(geojson) {
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n';
-    geojson.features.forEach(f => {
-        const props = f.properties;
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<osm version="0.6" generator="OSM Pentagram Extractor">\n';
+    
+    let nodeId = -1;
+    let wayId = -1;
+    let relationId = -1;
+    
+    // Track all nodes for ways
+    const nodeMap = new Map();
+    
+    geojson.features.forEach(feature => {
+        const props = feature.properties;
+        const geometry = feature.geometry;
+        
+        // Generate tags XML
         const tags = Object.entries(props)
-            .filter(([k]) => k !== 'id')
+            .filter(([k]) => k !== 'id' && k !== 'type')
             .map(([k, v]) => `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>`)
             .join('\n');
         
-        if (f.geometry.type === 'Point') {
-            xml += `  <node id="${props.id}" lat="${f.geometry.coordinates[1]}" lon="${f.geometry.coordinates[0]}">\n${tags}\n  </node>\n`;
+        if (geometry.type === 'Point') {
+            const [lon, lat] = geometry.coordinates;
+            xml += `  <node id="${nodeId}" version="1" lat="${lat}" lon="${lon}">\n`;
+            if (tags) xml += tags + '\n';
+            xml += `  </node>\n`;
+            nodeId--;
+            
+        } else if (geometry.type === 'LineString') {
+            // Create nodes for the linestring
+            const nodeRefs = [];
+            geometry.coordinates.forEach(coord => {
+                const [lon, lat] = coord;
+                const currentNodeId = nodeId;
+                xml += `  <node id="${currentNodeId}" version="1" lat="${lat}" lon="${lon}" />\n`;
+                nodeRefs.push(currentNodeId);
+                nodeId--;
+            });
+            
+            // Create the way
+            const currentWayId = wayId;
+            xml += `  <way id="${currentWayId}" version="1">\n`;
+            nodeRefs.forEach(nodeRef => {
+                xml += `    <nd ref="${nodeRef}" />\n`;
+            });
+            if (tags) xml += tags + '\n';
+            xml += `  </way>\n`;
+            wayId--;
+            
+        } else if (geometry.type === 'Polygon') {
+            // Create nodes for the polygon
+            const nodeRefs = [];
+            geometry.coordinates[0].forEach(coord => {
+                const [lon, lat] = coord;
+                const currentNodeId = nodeId;
+                xml += `  <node id="${currentNodeId}" version="1" lat="${lat}" lon="${lon}" />\n`;
+                nodeRefs.push(currentNodeId);
+                nodeId--;
+            });
+            
+            // Create the way (closed)
+            const currentWayId = wayId;
+            xml += `  <way id="${currentWayId}" version="1">\n`;
+            nodeRefs.forEach(nodeRef => {
+                xml += `    <nd ref="${nodeRef}" />\n`;
+            });
+            if (tags) xml += tags + '\n';
+            xml += `  </way>\n`;
+            wayId--;
         }
     });
-    xml += '</osm>';
+    
+    xml += '</osm>\n';
     return xml;
 }
 
@@ -650,33 +825,52 @@ function escapeXml(unsafe) {
 }
 
 function convertToCSV(geojson) {
-    const rows = [['id', 'type', 'name', 'lat', 'lon', 'category', 'tags']];
+    const rows = [['id', 'type', 'name', 'lat', 'lon', 'category', 'geometry_type', 'all_tags']];
+    
     geojson.features.forEach(f => {
         const props = f.properties;
-        let coords;
+        let coords = [0, 0];
+        
         try {
-            coords = f.geometry.type === 'Point' 
-                ? f.geometry.coordinates 
-                : turf.centroid(f).geometry.coordinates;
+            if (f.geometry.type === 'Point') {
+                coords = f.geometry.coordinates;
+            } else if (f.geometry.type === 'LineString') {
+                // Use midpoint for linestrings
+                const midIndex = Math.floor(f.geometry.coordinates.length / 2);
+                coords = f.geometry.coordinates[midIndex];
+            } else if (f.geometry.type === 'Polygon') {
+                // Use centroid for polygons
+                coords = turf.centroid(f).geometry.coordinates;
+            }
         } catch (e) {
-            coords = [0, 0];
+            console.warn('Error getting coordinates for feature:', f.properties.id, e);
         }
         
         const category = props.highway ? 'highway' : 
                         props.building ? 'building' :
                         props.amenity ? 'amenity' :
-                        props.natural ? 'natural' : 'other';
+                        props.natural ? 'natural' :
+                        props.landuse ? 'landuse' :
+                        props.waterway ? 'waterway' : 'other';
+        
+        const name = props.name || props.amenity || props.highway || props.building || props.natural || '';
+        
+        // Create clean tags object without internal properties
+        const cleanTags = {...props};
+        delete cleanTags.id;
         
         rows.push([
             props.id || '',
             f.geometry.type || '',
-            props.name || '',
-            coords[1],
-            coords[0],
+            name,
+            coords[1], // latitude
+            coords[0], // longitude
             category,
-            JSON.stringify(props).replace(/"/g, '""')
+            f.geometry.type,
+            JSON.stringify(cleanTags).replace(/"/g, '""')
         ]);
     });
+    
     return rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
 }
 
