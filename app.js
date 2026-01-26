@@ -746,9 +746,10 @@ function convertToOSMXML(geojson) {
     let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
     xml += '<osm version="0.6" generator="OSM Pentagram Extractor">\n';
     
-    // Use original OSM IDs where available, generate negative IDs for new features
-    let nextNodeId = -1000000;
-    let nextWayId = -1000000;
+    // Use positive IDs in a safe range (900M+) to avoid conflicts with real OSM data
+    // Real OSM IDs are typically much lower, so this range should be safe
+    let nextNodeId = 900000000;
+    let nextWayId = 950000000;
     
     // First pass: collect all nodes (both standalone and from ways)
     const allNodes = new Map();
@@ -760,7 +761,8 @@ function convertToOSMXML(geojson) {
         
         if (geometry.type === 'Point') {
             const [lon, lat] = geometry.coordinates;
-            const nodeId = (originalId && originalId > 0) ? originalId : nextNodeId--;
+            // Use original ID if it's positive and in reasonable range, otherwise generate safe ID
+            const nodeId = (originalId && originalId > 0 && originalId < 800000000) ? originalId : nextNodeId++;
             allNodes.set(nodeId, {
                 id: nodeId,
                 lat: lat,
@@ -770,7 +772,7 @@ function convertToOSMXML(geojson) {
         } else if (geometry.type === 'LineString') {
             geometry.coordinates.forEach(coord => {
                 const [lon, lat] = coord;
-                const nodeId = nextNodeId--;
+                const nodeId = nextNodeId++;
                 allNodes.set(nodeId, {
                     id: nodeId,
                     lat: lat,
@@ -781,7 +783,7 @@ function convertToOSMXML(geojson) {
         } else if (geometry.type === 'Polygon') {
             geometry.coordinates[0].forEach(coord => {
                 const [lon, lat] = coord;
-                const nodeId = nextNodeId--;
+                const nodeId = nextNodeId++;
                 allNodes.set(nodeId, {
                     id: nodeId,
                     lat: lat,
@@ -792,7 +794,7 @@ function convertToOSMXML(geojson) {
         }
     });
     
-    // Write all nodes first
+    // Write all nodes first (required by OSM XML schema)
     allNodes.forEach(node => {
         xml += `  <node id="${node.id}" version="1" lat="${node.lat.toFixed(7)}" lon="${node.lon.toFixed(7)}"`;
         
@@ -808,14 +810,15 @@ function convertToOSMXML(geojson) {
         }
     });
     
-    // Second pass: write ways
-    let currentNodeId = -1000000;
+    // Second pass: write ways with positive IDs
+    let currentNodeId = 900000000;
     geojson.features.forEach(feature => {
         const props = feature.properties;
         const geometry = feature.geometry;
         
         if (geometry.type === 'LineString' || geometry.type === 'Polygon') {
-            const wayId = (props.id && props.id > 0) ? props.id : nextWayId--;
+            const originalId = props.id;
+            const wayId = (originalId && originalId > 0 && originalId < 800000000) ? originalId : nextWayId++;
             const coords = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates;
             
             xml += `  <way id="${wayId}" version="1">\n`;
@@ -823,7 +826,7 @@ function convertToOSMXML(geojson) {
             // Add node references
             coords.forEach(() => {
                 xml += `    <nd ref="${currentNodeId}"/>\n`;
-                currentNodeId--;
+                currentNodeId++;
             });
             
             // Add tags
@@ -868,18 +871,19 @@ function convertToJOSMXML(geojson) {
     xml += `<osm version="0.6" generator="OSM Pentagram Extractor" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">\n`;
     xml += `  <bounds minlat="${minLat.toFixed(7)}" minlon="${minLon.toFixed(7)}" maxlat="${maxLat.toFixed(7)}" maxlon="${maxLon.toFixed(7)}"/>\n\n`;
     
-    let nodeId = -1000000;
-    let wayId = -1000000;
+    // Use positive IDs in safe range to avoid conflicts and corruption
+    let nodeId = 900000000;
+    let wayId = 950000000;
     const nodeMap = new Map();
     const timestamp = new Date().toISOString();
     
-    // First pass: create all nodes
+    // First pass: create all nodes with positive IDs
     geojson.features.forEach(feature => {
         const geometry = feature.geometry;
         
         if (geometry.type === 'Point') {
             const [lon, lat] = geometry.coordinates;
-            const id = nodeId--;
+            const id = nodeId++;
             nodeMap.set(`${lon},${lat}`, id);
             
             xml += `  <node id="${id}" visible="true" version="1" changeset="1" timestamp="${timestamp}" user="OSM_Extractor" uid="1" lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}"`;
@@ -899,7 +903,7 @@ function convertToJOSMXML(geojson) {
             coords.forEach(([lon, lat]) => {
                 const coordKey = `${lon},${lat}`;
                 if (!nodeMap.has(coordKey)) {
-                    const id = nodeId--;
+                    const id = nodeId++;
                     nodeMap.set(coordKey, id);
                     xml += `  <node id="${id}" visible="true" version="1" changeset="1" timestamp="${timestamp}" user="OSM_Extractor" uid="1" lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}"/>\n`;
                 }
@@ -909,12 +913,12 @@ function convertToJOSMXML(geojson) {
     
     xml += '\n';
     
-    // Second pass: create ways
+    // Second pass: create ways with positive IDs
     geojson.features.forEach(feature => {
         const geometry = feature.geometry;
         
         if (geometry.type === 'LineString' || geometry.type === 'Polygon') {
-            const id = wayId--;
+            const id = wayId++;
             const coords = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates;
             
             xml += `  <way id="${id}" visible="true" version="1" changeset="1" timestamp="${timestamp}" user="OSM_Extractor" uid="1">\n`;
