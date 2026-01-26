@@ -1,8 +1,18 @@
-// Initialize map
-const map = L.map('map').setView([40.7128, -74.0060], 12);
+// Initialize map with mobile-optimized settings
+const map = L.map('map', {
+    tap: true,
+    touchZoom: true,
+    bounceAtZoomLimits: false,
+    zoomSnap: 0.5,
+    zoomDelta: 0.5,
+    wheelPxPerZoomLevel: 60
+}).setView([40.7128, -74.0060], 12);
 
+// Use higher quality tiles for better mobile experience
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors'
+    attribution: '© OpenStreetMap contributors',
+    maxZoom: 19,
+    detectRetina: true
 }).addTo(map);
 
 // State
@@ -12,6 +22,9 @@ let polygonLayer = null;
 let dataLayer = null;
 let extractedData = null;
 let maxPoints = 5;
+let isMobile = window.innerWidth < 768;
+let touchStartTime = 0;
+let lastTap = 0;
 
 // DOM Elements
 const numPointsInput = document.getElementById('numPoints');
@@ -23,6 +36,143 @@ const progressDiv = document.getElementById('progress');
 const progressFill = document.getElementById('progressFill');
 const statsDiv = document.getElementById('stats');
 const exportSection = document.getElementById('exportSection');
+const sidebar = document.getElementById('sidebar');
+const menuToggle = document.getElementById('menuToggle');
+const overlay = document.getElementById('overlay');
+
+// Mobile menu functionality
+function initMobileMenu() {
+    menuToggle.addEventListener('click', toggleSidebar);
+    overlay.addEventListener('click', closeSidebar);
+    
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', (e) => {
+        if (isMobile && sidebar.classList.contains('open') && 
+            !sidebar.contains(e.target) && !menuToggle.contains(e.target)) {
+            closeSidebar();
+        }
+    });
+}
+
+function toggleSidebar() {
+    const isOpen = sidebar.classList.contains('open');
+    if (isOpen) {
+        closeSidebar();
+    } else {
+        openSidebar();
+    }
+}
+
+function openSidebar() {
+    sidebar.classList.add('open');
+    overlay.classList.add('active');
+    menuToggle.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('active');
+    menuToggle.classList.remove('active');
+    document.body.style.overflow = 'auto';
+}
+
+// Responsive behavior
+function handleResize() {
+    const wasMobile = isMobile;
+    isMobile = window.innerWidth < 768;
+    
+    if (wasMobile && !isMobile) {
+        // Switched from mobile to desktop
+        closeSidebar();
+        document.body.style.overflow = 'auto';
+    }
+    
+    // Invalidate map size after resize
+    setTimeout(() => map.invalidateSize(), 300);
+}
+
+window.addEventListener('resize', handleResize);
+
+// Initialize mobile menu
+initMobileMenu();
+
+// Enhanced touch handling for map interactions
+let mapTouchHandled = false;
+
+function handleMapTouch(e) {
+    if (mapTouchHandled) return;
+    
+    const currentTime = new Date().getTime();
+    const tapLength = currentTime - touchStartTime;
+    
+    // Prevent accidental double-taps
+    if (tapLength < 500 && tapLength > 0) {
+        const timeSinceLastTap = currentTime - lastTap;
+        if (timeSinceLastTap < 300) {
+            return; // Too quick, likely accidental
+        }
+    }
+    
+    if (points.length >= maxPoints) {
+        showToast('Maximum points reached');
+        return;
+    }
+    
+    const { lat, lng } = e.latlng;
+    points.push([lng, lat]);
+    
+    // Create marker with enhanced mobile styling
+    const marker = L.circleMarker([lat, lng], {
+        radius: isMobile ? 12 : 8,
+        fillColor: '#2563eb',
+        color: '#ffffff',
+        weight: 3,
+        fillOpacity: 0.9
+    }).addTo(map);
+    
+    // Enhanced tooltip for mobile
+    marker.bindTooltip(`Point ${points.length}`, {
+        permanent: false,
+        direction: 'top',
+        offset: [0, -10],
+        className: 'custom-tooltip'
+    });
+    
+    markers.push(marker);
+    
+    updateUI();
+    drawPolygon();
+    
+    // Provide haptic feedback if available
+    if (navigator.vibrate) {
+        navigator.vibrate(50);
+    }
+    
+    // Auto-close sidebar on mobile after adding point
+    if (isMobile && sidebar.classList.contains('open')) {
+        setTimeout(closeSidebar, 500);
+    }
+    
+    lastTap = currentTime;
+}
+
+// Map event handlers
+map.on('click', handleMapTouch);
+
+map.on('touchstart', () => {
+    touchStartTime = new Date().getTime();
+    mapTouchHandled = false;
+});
+
+map.on('touchend', () => {
+    mapTouchHandled = false;
+});
+
+// Prevent map interaction conflicts
+map.on('movestart', () => {
+    mapTouchHandled = true;
+});
 
 // Update max points
 numPointsInput.addEventListener('change', () => {
@@ -32,31 +182,18 @@ numPointsInput.addEventListener('change', () => {
     clearPoints();
 });
 
-// Map click handler
-map.on('click', (e) => {
-    if (points.length >= maxPoints) return;
-    
-    const { lat, lng } = e.latlng;
-    points.push([lng, lat]);
-    
-    const marker = L.circleMarker([lat, lng], {
-        radius: 8,
-        fillColor: '#667eea',
-        color: '#fff',
-        weight: 2,
-        fillOpacity: 0.8
-    }).addTo(map);
-    
-    marker.bindTooltip(`Point ${points.length}`);
-    markers.push(marker);
-    
-    updateUI();
-    drawPolygon();
-});
-
 function updateUI() {
     pointCountSpan.textContent = points.length;
     extractBtn.disabled = points.length < maxPoints;
+    
+    // Update button text for mobile
+    if (isMobile) {
+        extractBtn.textContent = points.length < maxPoints 
+            ? `Need ${maxPoints - points.length} more points`
+            : 'Extract OSM Data';
+    } else {
+        extractBtn.textContent = 'Extract OSM Data';
+    }
 }
 
 function clearPoints() {
@@ -71,6 +208,8 @@ function clearPoints() {
     statsDiv.style.display = 'none';
     exportSection.style.display = 'none';
     updateUI();
+    
+    showToast('Points cleared');
 }
 
 clearBtn.addEventListener('click', clearPoints);
@@ -102,27 +241,85 @@ function drawPolygon() {
     const latLngs = coords.map(p => [p[1], p[0]]);
     
     polygonLayer = L.polygon(latLngs, {
-        color: '#764ba2',
+        color: '#2563eb',
         weight: 3,
-        fillColor: '#667eea',
-        fillOpacity: 0.3
+        fillColor: '#2563eb',
+        fillOpacity: 0.2,
+        dashArray: '5, 10'
     }).addTo(map);
+    
+    // Fit bounds with padding for mobile
+    if (points.length === maxPoints) {
+        const padding = isMobile ? 50 : 20;
+        map.fitBounds(polygonLayer.getBounds(), { padding: [padding, padding] });
+    }
 }
 
-// Extract OSM Data
+// Enhanced toast notification system
+function showToast(message, type = 'info', duration = 3000) {
+    // Remove existing toasts
+    const existingToasts = document.querySelectorAll('.toast');
+    existingToasts.forEach(toast => toast.remove());
+    
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    toast.style.cssText = `
+        position: fixed;
+        top: 80px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: var(--surface);
+        color: var(--text);
+        padding: 12px 20px;
+        border-radius: var(--radius);
+        border: 1px solid var(--border);
+        box-shadow: 0 10px 25px var(--shadow);
+        z-index: 10000;
+        font-family: var(--font-display);
+        font-size: 14px;
+        font-weight: 500;
+        backdrop-filter: blur(20px);
+        opacity: 0;
+        transition: all 0.3s ease;
+    `;
+    
+    document.body.appendChild(toast);
+    
+    // Animate in
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateX(-50%) translateY(0)';
+    });
+    
+    // Remove after duration
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(-50%) translateY(-20px)';
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+
+// Extract OSM Data with mobile optimizations
 extractBtn.addEventListener('click', async () => {
     const categories = Array.from(document.querySelectorAll('.checkbox-group input:checked'))
         .map(cb => cb.value);
     
     if (categories.length === 0) {
-        alert('Please select at least one data category');
+        showToast('Please select at least one data category', 'warning');
         return;
     }
     
+    // Close sidebar on mobile during extraction
+    if (isMobile) {
+        closeSidebar();
+    }
+    
     extractBtn.disabled = true;
+    extractBtn.classList.add('loading');
     progressDiv.style.display = 'block';
     progressFill.style.width = '0%';
-    progressFill.textContent = '0%';
+    progressFill.textContent = 'Starting...';
     
     try {
         const coords = getPolygonCoordinates();
@@ -131,31 +328,47 @@ extractBtn.addEventListener('click', async () => {
         
         const query = buildOverpassQuery(bbox, categories);
         
-        progressFill.style.width = '30%';
-        progressFill.textContent = '30%';
+        progressFill.style.width = '20%';
+        progressFill.textContent = 'Building query...';
+        
+        showToast('Fetching OSM data...', 'info');
         
         const response = await fetch('https://overpass-api.de/api/interpreter', {
             method: 'POST',
             body: query
         });
         
-        progressFill.style.width = '70%';
-        progressFill.textContent = '70%';
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        progressFill.style.width = '60%';
+        progressFill.textContent = 'Downloading...';
         
         const data = await response.json();
+        
+        progressFill.style.width = '80%';
+        progressFill.textContent = 'Processing...';
+        
         extractedData = processOSMData(data, polygon);
         
         progressFill.style.width = '100%';
-        progressFill.textContent = '100%';
+        progressFill.textContent = 'Complete!';
         
         displayResults(extractedData, polygon);
+        showToast(`Found ${extractedData.features.length} features!`, 'success');
         
     } catch (error) {
         console.error('Extraction error:', error);
-        alert('Error extracting data: ' + error.message);
+        showToast(`Error: ${error.message}`, 'error', 5000);
+        progressFill.style.width = '0%';
+        progressFill.textContent = '0%';
     } finally {
         extractBtn.disabled = false;
-        setTimeout(() => progressDiv.style.display = 'none', 1000);
+        extractBtn.classList.remove('loading');
+        setTimeout(() => {
+            progressDiv.style.display = 'none';
+        }, 2000);
     }
 });
 
@@ -179,6 +392,9 @@ function processOSMData(data, polygon) {
         nodes[node.id] = [node.lon, node.lat];
     });
     
+    let processed = 0;
+    const total = data.elements.length;
+    
     data.elements.forEach(element => {
         let geometry = null;
         
@@ -187,8 +403,9 @@ function processOSMData(data, polygon) {
         } else if (element.type === 'way' && element.nodes) {
             const coords = element.nodes.map(id => nodes[id]).filter(Boolean);
             if (coords.length >= 2) {
-                const isClosed = coords[0][0] === coords[coords.length-1][0] && 
-                                 coords[0][1] === coords[coords.length-1][1] && coords.length >= 4;
+                const isClosed = coords.length >= 4 && 
+                    coords[0][0] === coords[coords.length-1][0] && 
+                    coords[0][1] === coords[coords.length-1][1];
                 geometry = isClosed
                     ? { type: 'Polygon', coordinates: [coords] }
                     : { type: 'LineString', coordinates: coords };
@@ -208,10 +425,8 @@ function processOSMData(data, polygon) {
                 if (geometry.type === 'Point') {
                     point = turf.point(geometry.coordinates);
                 } else if (geometry.type === 'LineString') {
-                    point = turf.midpoint(
-                        turf.point(geometry.coordinates[0]),
-                        turf.point(geometry.coordinates[Math.floor(geometry.coordinates.length / 2)])
-                    );
+                    const midIndex = Math.floor(geometry.coordinates.length / 2);
+                    point = turf.point(geometry.coordinates[midIndex]);
                 } else {
                     point = turf.centroid(feature);
                 }
@@ -223,6 +438,8 @@ function processOSMData(data, polygon) {
                 console.warn('Error checking feature:', e);
             }
         }
+        
+        processed++;
     });
     
     return { type: 'FeatureCollection', features };
@@ -231,27 +448,54 @@ function processOSMData(data, polygon) {
 function displayResults(geojson, polygon) {
     if (dataLayer) map.removeLayer(dataLayer);
     
+    // Enhanced styling for mobile visibility
     dataLayer = L.geoJSON(geojson, {
-        style: feature => ({
-            color: '#e74c3c',
-            weight: 2,
-            fillOpacity: 0.3
-        }),
+        style: feature => {
+            const baseStyle = {
+                color: '#06b6d4',
+                weight: isMobile ? 3 : 2,
+                fillOpacity: 0.4,
+                opacity: 0.8
+            };
+            
+            // Different colors for different feature types
+            if (feature.properties.highway) {
+                return { ...baseStyle, color: '#ef4444' };
+            } else if (feature.properties.building) {
+                return { ...baseStyle, color: '#8b5cf6' };
+            } else if (feature.properties.amenity) {
+                return { ...baseStyle, color: '#10b981' };
+            }
+            return baseStyle;
+        },
         pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
-            radius: 5,
-            fillColor: '#e74c3c',
-            color: '#fff',
-            weight: 1,
+            radius: isMobile ? 8 : 5,
+            fillColor: getFeatureColor(feature.properties),
+            color: '#ffffff',
+            weight: 2,
             fillOpacity: 0.8
         }),
         onEachFeature: (feature, layer) => {
             const props = feature.properties;
-            const name = props.name || props.amenity || props.highway || 'Unknown';
-            layer.bindPopup(`<strong>${name}</strong><br>ID: ${props.id}`);
+            const name = props.name || props.amenity || props.highway || props.building || 'Unknown';
+            const type = props.highway ? 'Highway' : props.building ? 'Building' : props.amenity ? 'POI' : 'Feature';
+            
+            const popupContent = `
+                <div style="font-family: var(--font-display); min-width: 200px;">
+                    <h4 style="margin: 0 0 8px 0; color: var(--primary);">${name}</h4>
+                    <p style="margin: 0 0 4px 0; font-size: 12px; color: var(--text-muted);">Type: ${type}</p>
+                    <p style="margin: 0; font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">ID: ${props.id}</p>
+                </div>
+            `;
+            
+            layer.bindPopup(popupContent, {
+                maxWidth: 300,
+                className: 'custom-popup'
+            });
         }
     }).addTo(map);
     
-    // Calculate stats
+    // Calculate and display stats
     const area = turf.area(polygon) / 1000000;
     const roads = geojson.features.filter(f => f.properties.highway).length;
     const buildings = geojson.features.filter(f => f.properties.building).length;
@@ -265,31 +509,62 @@ function displayResults(geojson, polygon) {
     
     statsDiv.style.display = 'block';
     exportSection.style.display = 'block';
+    
+    // Auto-open sidebar on mobile to show results
+    if (isMobile && !sidebar.classList.contains('open')) {
+        setTimeout(() => {
+            openSidebar();
+            // Scroll to stats
+            setTimeout(() => {
+                statsDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 300);
+        }, 500);
+    }
 }
 
-// Export functions
+function getFeatureColor(props) {
+    if (props.highway) return '#ef4444';
+    if (props.building) return '#8b5cf6';
+    if (props.amenity) return '#10b981';
+    if (props.natural) return '#059669';
+    return '#06b6d4';
+}
+
+// Enhanced export functions with mobile considerations
 document.getElementById('exportGeoJSON').addEventListener('click', () => {
+    showToast('Downloading GeoJSON...', 'info');
     downloadFile(JSON.stringify(extractedData, null, 2), 'osm_data.geojson', 'application/json');
 });
 
 document.getElementById('exportOSM').addEventListener('click', () => {
+    showToast('Converting to OSM XML...', 'info');
     const xml = convertToOSMXML(extractedData);
     downloadFile(xml, 'osm_data.osm', 'application/xml');
 });
 
 document.getElementById('exportCSV').addEventListener('click', () => {
+    showToast('Converting to CSV...', 'info');
     const csv = convertToCSV(extractedData);
     downloadFile(csv, 'osm_data.csv', 'text/csv');
 });
 
 function downloadFile(content, filename, type) {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+        const blob = new Blob([content], { type });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`Downloaded ${filename}`, 'success');
+    } catch (error) {
+        showToast('Download failed', 'error');
+        console.error('Download error:', error);
+    }
 }
 
 function convertToOSMXML(geojson) {
@@ -298,7 +573,7 @@ function convertToOSMXML(geojson) {
         const props = f.properties;
         const tags = Object.entries(props)
             .filter(([k]) => k !== 'id')
-            .map(([k, v]) => `    <tag k="${k}" v="${String(v).replace(/"/g, '&quot;')}"/>`)
+            .map(([k, v]) => `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>`)
             .join('\n');
         
         if (f.geometry.type === 'Point') {
@@ -309,8 +584,21 @@ function convertToOSMXML(geojson) {
     return xml;
 }
 
+function escapeXml(unsafe) {
+    return unsafe.replace(/[<>&'"]/g, function (c) {
+        switch (c) {
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '&': return '&amp;';
+            case '\'': return '&apos;';
+            case '"': return '&quot;';
+            default: return c;
+        }
+    });
+}
+
 function convertToCSV(geojson) {
-    const rows = [['id', 'type', 'name', 'lat', 'lon', 'tags']];
+    const rows = [['id', 'type', 'name', 'lat', 'lon', 'category', 'tags']];
     geojson.features.forEach(f => {
         const props = f.properties;
         let coords;
@@ -321,16 +609,103 @@ function convertToCSV(geojson) {
         } catch (e) {
             coords = [0, 0];
         }
+        
+        const category = props.highway ? 'highway' : 
+                        props.building ? 'building' :
+                        props.amenity ? 'amenity' :
+                        props.natural ? 'natural' : 'other';
+        
         rows.push([
-            props.id,
-            f.geometry.type,
+            props.id || '',
+            f.geometry.type || '',
             props.name || '',
             coords[1],
             coords[0],
-            JSON.stringify(props)
+            category,
+            JSON.stringify(props).replace(/"/g, '""')
         ]);
     });
     return rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
 }
 
+// Initialize UI
+updateUI();
 
+// Add custom CSS for enhanced mobile styles
+const style = document.createElement('style');
+style.textContent = `
+    .custom-tooltip {
+        background: var(--surface) !important;
+        border: 1px solid var(--border) !important;
+        color: var(--text) !important;
+        border-radius: var(--radius) !important;
+        box-shadow: 0 4px 12px var(--shadow) !important;
+        font-family: var(--font-display) !important;
+        font-size: 12px !important;
+        font-weight: 500 !important;
+    }
+    
+    .custom-tooltip::before {
+        border-top-color: var(--surface) !important;
+    }
+    
+    .custom-popup .leaflet-popup-content {
+        margin: 8px 12px !important;
+    }
+    
+    .leaflet-container a {
+        color: var(--primary) !important;
+    }
+    
+    .leaflet-control-zoom {
+        border: 1px solid var(--border) !important;
+        border-radius: var(--radius) !important;
+        overflow: hidden;
+        box-shadow: 0 4px 12px var(--shadow) !important;
+    }
+    
+    .leaflet-control-zoom a {
+        background: var(--surface) !important;
+        color: var(--text) !important;
+        border: none !important;
+        width: 40px !important;
+        height: 40px !important;
+        line-height: 40px !important;
+        font-size: 18px !important;
+    }
+    
+    .leaflet-control-zoom a:hover {
+        background: var(--surface-light) !important;
+    }
+    
+    @media (max-width: 767px) {
+        .leaflet-control-zoom {
+            margin-top: 20px !important;
+            margin-right: 20px !important;
+        }
+        
+        .leaflet-control-zoom a {
+            width: 50px !important;
+            height: 50px !important;
+            line-height: 50px !important;
+            font-size: 20px !important;
+        }
+    }
+`;
+document.head.appendChild(style);
+
+// Performance optimization: Debounce resize events
+let resizeTimeout;
+window.addEventListener('resize', () => {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(handleResize, 150);
+});
+
+// Add service worker registration for PWA capabilities (optional)
+if ('serviceWorker' in navigator && 'production' === 'production') {
+    window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+            .then(registration => console.log('SW registered'))
+            .catch(error => console.log('SW registration failed'));
+    });
+}
