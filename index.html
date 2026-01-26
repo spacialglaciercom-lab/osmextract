@@ -151,6 +151,8 @@
             background: var(--surface);
             position: relative;
             z-index: 1;
+            touch-action: manipulation;
+            cursor: crosshair;
         }
 
         #sidebar {
@@ -485,6 +487,10 @@
             
             .stat-item {
                 min-height: 48px;
+            }
+            
+            #map {
+                cursor: pointer;
             }
         }
 
