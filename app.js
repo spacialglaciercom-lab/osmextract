@@ -710,6 +710,13 @@ document.getElementById('exportOSM').addEventListener('click', () => {
     downloadFile(xml, 'osm_data.osm', 'application/xml');
 });
 
+// Add JOSM-compatible export
+document.getElementById('exportJOSM').addEventListener('click', () => {
+    showToast('Converting to JOSM format...', 'info');
+    const josmXml = convertToJOSMXML(extractedData);
+    downloadFile(josmXml, 'osm_data_josm.osm', 'application/xml');
+});
+
 document.getElementById('exportCSV').addEventListener('click', () => {
     showToast('Converting to CSV...', 'info');
     const csv = convertToCSV(extractedData);
@@ -739,76 +746,215 @@ function convertToOSMXML(geojson) {
     let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
     xml += '<osm version="0.6" generator="OSM Pentagram Extractor">\n';
     
-    let nodeId = -1;
-    let wayId = -1;
-    let relationId = -1;
+    // Use original OSM IDs where available, generate negative IDs for new features
+    let nextNodeId = -1000000;
+    let nextWayId = -1000000;
     
-    // Track all nodes for ways
-    const nodeMap = new Map();
+    // First pass: collect all nodes (both standalone and from ways)
+    const allNodes = new Map();
     
     geojson.features.forEach(feature => {
         const props = feature.properties;
         const geometry = feature.geometry;
-        
-        // Generate tags XML
-        const tags = Object.entries(props)
-            .filter(([k]) => k !== 'id' && k !== 'type')
-            .map(([k, v]) => `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>`)
-            .join('\n');
+        const originalId = props.id;
         
         if (geometry.type === 'Point') {
             const [lon, lat] = geometry.coordinates;
-            xml += `  <node id="${nodeId}" version="1" lat="${lat}" lon="${lon}">\n`;
-            if (tags) xml += tags + '\n';
-            xml += `  </node>\n`;
-            nodeId--;
-            
+            const nodeId = (originalId && originalId > 0) ? originalId : nextNodeId--;
+            allNodes.set(nodeId, {
+                id: nodeId,
+                lat: lat,
+                lon: lon,
+                tags: props
+            });
         } else if (geometry.type === 'LineString') {
-            // Create nodes for the linestring
-            const nodeRefs = [];
             geometry.coordinates.forEach(coord => {
                 const [lon, lat] = coord;
-                const currentNodeId = nodeId;
-                xml += `  <node id="${currentNodeId}" version="1" lat="${lat}" lon="${lon}" />\n`;
-                nodeRefs.push(currentNodeId);
-                nodeId--;
+                const nodeId = nextNodeId--;
+                allNodes.set(nodeId, {
+                    id: nodeId,
+                    lat: lat,
+                    lon: lon,
+                    tags: {} // Way nodes typically don't have tags
+                });
             });
-            
-            // Create the way
-            const currentWayId = wayId;
-            xml += `  <way id="${currentWayId}" version="1">\n`;
-            nodeRefs.forEach(nodeRef => {
-                xml += `    <nd ref="${nodeRef}" />\n`;
-            });
-            if (tags) xml += tags + '\n';
-            xml += `  </way>\n`;
-            wayId--;
-            
         } else if (geometry.type === 'Polygon') {
-            // Create nodes for the polygon
-            const nodeRefs = [];
             geometry.coordinates[0].forEach(coord => {
                 const [lon, lat] = coord;
-                const currentNodeId = nodeId;
-                xml += `  <node id="${currentNodeId}" version="1" lat="${lat}" lon="${lon}" />\n`;
-                nodeRefs.push(currentNodeId);
-                nodeId--;
+                const nodeId = nextNodeId--;
+                allNodes.set(nodeId, {
+                    id: nodeId,
+                    lat: lat,
+                    lon: lon,
+                    tags: {} // Polygon nodes typically don't have tags
+                });
+            });
+        }
+    });
+    
+    // Write all nodes first
+    allNodes.forEach(node => {
+        xml += `  <node id="${node.id}" version="1" lat="${node.lat.toFixed(7)}" lon="${node.lon.toFixed(7)}"`;
+        
+        const filteredTags = getFilteredTags(node.tags);
+        if (Object.keys(filteredTags).length > 0) {
+            xml += '>\n';
+            Object.entries(filteredTags).forEach(([k, v]) => {
+                xml += `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>\n`;
+            });
+            xml += '  </node>\n';
+        } else {
+            xml += '/>\n';
+        }
+    });
+    
+    // Second pass: write ways
+    let currentNodeId = -1000000;
+    geojson.features.forEach(feature => {
+        const props = feature.properties;
+        const geometry = feature.geometry;
+        
+        if (geometry.type === 'LineString' || geometry.type === 'Polygon') {
+            const wayId = (props.id && props.id > 0) ? props.id : nextWayId--;
+            const coords = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates;
+            
+            xml += `  <way id="${wayId}" version="1">\n`;
+            
+            // Add node references
+            coords.forEach(() => {
+                xml += `    <nd ref="${currentNodeId}"/>\n`;
+                currentNodeId--;
             });
             
-            // Create the way (closed)
-            const currentWayId = wayId;
-            xml += `  <way id="${currentWayId}" version="1">\n`;
-            nodeRefs.forEach(nodeRef => {
-                xml += `    <nd ref="${nodeRef}" />\n`;
+            // Add tags
+            const filteredTags = getFilteredTags(props);
+            Object.entries(filteredTags).forEach(([k, v]) => {
+                xml += `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>\n`;
             });
-            if (tags) xml += tags + '\n';
-            xml += `  </way>\n`;
-            wayId--;
+            
+            xml += '  </way>\n';
         }
     });
     
     xml += '</osm>\n';
     return xml;
+}
+
+function convertToJOSMXML(geojson) {
+    // Calculate bounds for the dataset
+    let minLat = 90, maxLat = -90, minLon = 180, maxLon = -180;
+    
+    geojson.features.forEach(feature => {
+        const geometry = feature.geometry;
+        let coords = [];
+        
+        if (geometry.type === 'Point') {
+            coords = [geometry.coordinates];
+        } else if (geometry.type === 'LineString') {
+            coords = geometry.coordinates;
+        } else if (geometry.type === 'Polygon') {
+            coords = geometry.coordinates[0];
+        }
+        
+        coords.forEach(([lon, lat]) => {
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lon < minLon) minLon = lon;
+            if (lon > maxLon) maxLon = lon;
+        });
+    });
+    
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += `<osm version="0.6" generator="OSM Pentagram Extractor" copyright="OpenStreetMap and contributors" attribution="http://www.openstreetmap.org/copyright" license="http://opendatacommons.org/licenses/odbl/1-0/">\n`;
+    xml += `  <bounds minlat="${minLat.toFixed(7)}" minlon="${minLon.toFixed(7)}" maxlat="${maxLat.toFixed(7)}" maxlon="${maxLon.toFixed(7)}"/>\n\n`;
+    
+    let nodeId = -1000000;
+    let wayId = -1000000;
+    const nodeMap = new Map();
+    const timestamp = new Date().toISOString();
+    
+    // First pass: create all nodes
+    geojson.features.forEach(feature => {
+        const geometry = feature.geometry;
+        
+        if (geometry.type === 'Point') {
+            const [lon, lat] = geometry.coordinates;
+            const id = nodeId--;
+            nodeMap.set(`${lon},${lat}`, id);
+            
+            xml += `  <node id="${id}" visible="true" version="1" changeset="1" timestamp="${timestamp}" user="OSM_Extractor" uid="1" lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}"`;
+            
+            const filteredTags = getFilteredTags(feature.properties);
+            if (Object.keys(filteredTags).length > 0) {
+                xml += '>\n';
+                Object.entries(filteredTags).forEach(([k, v]) => {
+                    xml += `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>\n`;
+                });
+                xml += '  </node>\n';
+            } else {
+                xml += '/>\n';
+            }
+        } else if (geometry.type === 'LineString' || geometry.type === 'Polygon') {
+            const coords = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates;
+            coords.forEach(([lon, lat]) => {
+                const coordKey = `${lon},${lat}`;
+                if (!nodeMap.has(coordKey)) {
+                    const id = nodeId--;
+                    nodeMap.set(coordKey, id);
+                    xml += `  <node id="${id}" visible="true" version="1" changeset="1" timestamp="${timestamp}" user="OSM_Extractor" uid="1" lat="${lat.toFixed(7)}" lon="${lon.toFixed(7)}"/>\n`;
+                }
+            });
+        }
+    });
+    
+    xml += '\n';
+    
+    // Second pass: create ways
+    geojson.features.forEach(feature => {
+        const geometry = feature.geometry;
+        
+        if (geometry.type === 'LineString' || geometry.type === 'Polygon') {
+            const id = wayId--;
+            const coords = geometry.type === 'Polygon' ? geometry.coordinates[0] : geometry.coordinates;
+            
+            xml += `  <way id="${id}" visible="true" version="1" changeset="1" timestamp="${timestamp}" user="OSM_Extractor" uid="1">\n`;
+            
+            coords.forEach(([lon, lat]) => {
+                const nodeRef = nodeMap.get(`${lon},${lat}`);
+                xml += `    <nd ref="${nodeRef}"/>\n`;
+            });
+            
+            const filteredTags = getFilteredTags(feature.properties);
+            Object.entries(filteredTags).forEach(([k, v]) => {
+                xml += `    <tag k="${escapeXml(k)}" v="${escapeXml(String(v))}"/>\n`;
+            });
+            
+            xml += '  </way>\n';
+        }
+    });
+    
+    xml += '</osm>\n';
+    return xml;
+}
+
+function getFilteredTags(props) {
+    const filtered = { ...props };
+    // Remove internal properties that shouldn't be in OSM
+    delete filtered.id;
+    delete filtered.type;
+    delete filtered.timestamp;
+    delete filtered.version;
+    delete filtered.changeset;
+    delete filtered.user;
+    delete filtered.uid;
+    
+    // Ensure we have valid OSM tags
+    if (Object.keys(filtered).length === 0) {
+        // Add a default tag if no valid tags exist
+        filtered.note = 'Extracted from OSM Pentagram Boundary Extractor';
+    }
+    
+    return filtered;
 }
 
 function escapeXml(unsafe) {
