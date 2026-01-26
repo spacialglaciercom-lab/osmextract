@@ -1,11 +1,17 @@
 // Initialize map with mobile-optimized settings
 const map = L.map('map', {
     tap: true,
+    tapTolerance: 15,
     touchZoom: true,
+    doubleClickZoom: true,
+    boxZoom: true,
+    keyboard: true,
+    scrollWheelZoom: true,
     bounceAtZoomLimits: false,
     zoomSnap: 0.5,
     zoomDelta: 0.5,
-    wheelPxPerZoomLevel: 60
+    wheelPxPerZoomLevel: 60,
+    preferCanvas: false
 }).setView([40.7128, -74.0060], 12);
 
 // Use higher quality tiles for better mobile experience
@@ -23,8 +29,6 @@ let dataLayer = null;
 let extractedData = null;
 let maxPoints = 5;
 let isMobile = window.innerWidth < 768;
-let touchStartTime = 0;
-let lastTap = 0;
 
 // DOM Elements
 const numPointsInput = document.getElementById('numPoints');
@@ -42,16 +46,30 @@ const overlay = document.getElementById('overlay');
 
 // Mobile menu functionality
 function initMobileMenu() {
-    menuToggle.addEventListener('click', toggleSidebar);
-    overlay.addEventListener('click', closeSidebar);
-    
-    // Close sidebar when clicking outside on mobile
-    document.addEventListener('click', (e) => {
-        if (isMobile && sidebar.classList.contains('open') && 
-            !sidebar.contains(e.target) && !menuToggle.contains(e.target)) {
-            closeSidebar();
-        }
+    menuToggle.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleSidebar();
     });
+    
+    overlay.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeSidebar();
+    });
+    
+    // Prevent sidebar clicks from bubbling to map
+    sidebar.addEventListener('click', (e) => {
+        e.stopPropagation();
+    });
+    
+    // Close sidebar when clicking map area on mobile
+    if (isMobile) {
+        document.getElementById('map').addEventListener('click', (e) => {
+            if (sidebar.classList.contains('open')) {
+                // Allow the map click to process first, then close sidebar
+                setTimeout(closeSidebar, 100);
+            }
+        });
+    }
 }
 
 function toggleSidebar() {
@@ -97,23 +115,9 @@ window.addEventListener('resize', handleResize);
 // Initialize mobile menu
 initMobileMenu();
 
-// Enhanced touch handling for map interactions
-let mapTouchHandled = false;
-
-function handleMapTouch(e) {
-    if (mapTouchHandled) return;
-    
-    const currentTime = new Date().getTime();
-    const tapLength = currentTime - touchStartTime;
-    
-    // Prevent accidental double-taps
-    if (tapLength < 500 && tapLength > 0) {
-        const timeSinceLastTap = currentTime - lastTap;
-        if (timeSinceLastTap < 300) {
-            return; // Too quick, likely accidental
-        }
-    }
-    
+// Enhanced click/touch handling for map interactions
+function handleMapClick(e) {
+    // Prevent adding points if we're at maximum
     if (points.length >= maxPoints) {
         showToast('Maximum points reached');
         return;
@@ -128,7 +132,8 @@ function handleMapTouch(e) {
         fillColor: '#2563eb',
         color: '#ffffff',
         weight: 3,
-        fillOpacity: 0.9
+        fillOpacity: 0.9,
+        interactive: false // Prevent marker from interfering with map clicks
     }).addTo(map);
     
     // Enhanced tooltip for mobile
@@ -151,28 +156,14 @@ function handleMapTouch(e) {
     
     // Auto-close sidebar on mobile after adding point
     if (isMobile && sidebar.classList.contains('open')) {
-        setTimeout(closeSidebar, 500);
+        setTimeout(closeSidebar, 800);
     }
     
-    lastTap = currentTime;
+    showToast(`Point ${points.length} added`);
 }
 
-// Map event handlers
-map.on('click', handleMapTouch);
-
-map.on('touchstart', () => {
-    touchStartTime = new Date().getTime();
-    mapTouchHandled = false;
-});
-
-map.on('touchend', () => {
-    mapTouchHandled = false;
-});
-
-// Prevent map interaction conflicts
-map.on('movestart', () => {
-    mapTouchHandled = true;
-});
+// Simple event handler - works on both desktop and mobile
+map.on('click', handleMapClick);
 
 // Update max points
 numPointsInput.addEventListener('change', () => {
@@ -628,8 +619,19 @@ function convertToCSV(geojson) {
     return rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
 }
 
-// Initialize UI
+// Initialize UI and mobile detection
 updateUI();
+
+// Debug information for mobile
+console.log('Mobile detected:', isMobile);
+console.log('Touch events supported:', 'ontouchstart' in window);
+console.log('Map initialized with click handler');
+
+// Ensure map is ready for interaction
+map.whenReady(() => {
+    console.log('Map is ready for interaction');
+    showToast('Tap map to add points!', 'info', 2000);
+});
 
 // Add custom CSS for enhanced mobile styles
 const style = document.createElement('style');
