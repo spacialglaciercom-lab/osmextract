@@ -28,7 +28,17 @@ let polygonLayer = null;
 let dataLayer = null;
 let extractedData = null;
 let maxPoints = 5;
-let isMobile = window.innerWidth < 768;
+// Better mobile detection that works with dev tools
+function detectMobile() {
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isMobileUserAgent = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    const isSmallScreen = window.innerWidth < 768;
+    
+    return isMobileUserAgent || isTouchDevice || isSmallScreen;
+}
+
+let isMobile = detectMobile();
 
 // DOM Elements
 const numPointsInput = document.getElementById('numPoints');
@@ -98,7 +108,7 @@ function closeSidebar() {
 // Responsive behavior
 function handleResize() {
     const wasMobile = isMobile;
-    isMobile = window.innerWidth < 768;
+    isMobile = detectMobile();
     
     if (wasMobile && !isMobile) {
         // Switched from mobile to desktop
@@ -291,7 +301,7 @@ function showToast(message, type = 'info', duration = 3000) {
     }, duration);
 }
 
-// Extract OSM Data with mobile optimizations
+// Extract OSM Data with retry logic and multiple endpoints
 extractBtn.addEventListener('click', async () => {
     const categories = Array.from(document.querySelectorAll('.checkbox-group input:checked'))
         .map(cb => cb.value);
@@ -324,19 +334,58 @@ extractBtn.addEventListener('click', async () => {
         
         showToast('Fetching OSM data...', 'info');
         
-        const response = await fetch('https://overpass-api.de/api/interpreter', {
-            method: 'POST',
-            body: query
-        });
+        // Try multiple Overpass API endpoints with retry logic
+        const endpoints = [
+            'https://overpass-api.de/api/interpreter',
+            'https://lz4.overpass-api.de/api/interpreter',
+            'https://z.overpass-api.de/api/interpreter'
+        ];
         
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
+        let data = null;
+        let lastError = null;
+        
+        for (let i = 0; i < endpoints.length; i++) {
+            try {
+                progressFill.textContent = `Trying endpoint ${i + 1}...`;
+                
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+                
+                const response = await fetch(endpoints[i], {
+                    method: 'POST',
+                    body: query,
+                    signal: controller.signal,
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    }
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                progressFill.style.width = '60%';
+                progressFill.textContent = 'Downloading...';
+                
+                data = await response.json();
+                break; // Success, exit loop
+                
+            } catch (error) {
+                lastError = error;
+                console.warn(`Endpoint ${i + 1} failed:`, error.message);
+                
+                if (i < endpoints.length - 1) {
+                    showToast(`Endpoint ${i + 1} failed, trying backup...`, 'warning', 2000);
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+                }
+            }
         }
         
-        progressFill.style.width = '60%';
-        progressFill.textContent = 'Downloading...';
-        
-        const data = await response.json();
+        if (!data) {
+            throw new Error(`All endpoints failed. Last error: ${lastError?.message || 'Unknown error'}`);
+        }
         
         progressFill.style.width = '80%';
         progressFill.textContent = 'Processing...';
@@ -351,15 +400,27 @@ extractBtn.addEventListener('click', async () => {
         
     } catch (error) {
         console.error('Extraction error:', error);
-        showToast(`Error: ${error.message}`, 'error', 5000);
+        
+        let errorMessage = 'Unknown error occurred';
+        if (error.name === 'AbortError') {
+            errorMessage = 'Request timed out. Try a smaller area.';
+        } else if (error.message.includes('504')) {
+            errorMessage = 'Server overloaded. Try again in a few minutes.';
+        } else if (error.message.includes('Failed to fetch')) {
+            errorMessage = 'Network error. Check your connection.';
+        } else {
+            errorMessage = error.message;
+        }
+        
+        showToast(`Error: ${errorMessage}`, 'error', 8000);
         progressFill.style.width = '0%';
-        progressFill.textContent = '0%';
+        progressFill.textContent = 'Failed';
     } finally {
         extractBtn.disabled = false;
         extractBtn.classList.remove('loading');
         setTimeout(() => {
             progressDiv.style.display = 'none';
-        }, 2000);
+        }, 3000);
     }
 });
 
@@ -625,12 +686,15 @@ updateUI();
 // Debug information for mobile
 console.log('Mobile detected:', isMobile);
 console.log('Touch events supported:', 'ontouchstart' in window);
+console.log('Screen width:', window.innerWidth);
+console.log('User agent contains mobile:', /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(navigator.userAgent.toLowerCase()));
+console.log('Max touch points:', navigator.maxTouchPoints);
 console.log('Map initialized with click handler');
 
 // Ensure map is ready for interaction
 map.whenReady(() => {
     console.log('Map is ready for interaction');
-    showToast('Tap map to add points!', 'info', 2000);
+    showToast('Click/tap map to add points!', 'info', 3000);
 });
 
 // Add custom CSS for enhanced mobile styles
@@ -702,12 +766,3 @@ window.addEventListener('resize', () => {
     clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(handleResize, 150);
 });
-
-// Add service worker registration for PWA capabilities (optional)
-if ('serviceWorker' in navigator && 'production' === 'production') {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
-            .then(registration => console.log('SW registered'))
-            .catch(error => console.log('SW registration failed'));
-    });
-}
