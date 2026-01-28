@@ -436,43 +436,61 @@ function buildOverpassQuery(bbox, categories) {
     const [minLng, minLat, maxLng, maxLat] = bbox;
     const bboxStr = `${minLat},${minLng},${maxLat},${maxLng}`;
     
-    let filters = categories.map(cat => {
-        return `node["${cat}"](${bboxStr});way["${cat}"](${bboxStr});relation["${cat}"](${bboxStr});`;
-    }).join('');
+    // Define proper OSM tag queries for each category
+    const tagQueries = {
+        'amenity': [
+            'node["amenity"~"restaurant|cafe|bank|hospital|school|pharmacy|library|post_office|police|fire_station"](bbox);',
+            'way["amenity"~"restaurant|cafe|bank|hospital|school|pharmacy|library|post_office|police|fire_station"](bbox);'
+        ],
+        'highway': [
+            'way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|service|footway|cycleway|path"](bbox);'
+        ],
+        'building': [
+            'way["building"](bbox);',
+            'relation["building"](bbox);'
+        ],
+        'natural': [
+            'node["natural"~"tree|peak|water|wood"](bbox);',
+            'way["natural"~"water|wood|grassland|scrub"](bbox);'
+        ],
+        'landuse': [
+            'way["landuse"~"residential|commercial|industrial|retail|forest|farmland|grass"](bbox);'
+        ],
+        'waterway': [
+            'way["waterway"~"river|stream|canal|drain"](bbox);'
+        ],
+        'shop': [
+            'node["shop"](bbox);',
+            'way["shop"](bbox);'
+        ],
+        'leisure': [
+            'way["leisure"~"park|playground|sports_centre|pitch|garden"](bbox);',
+            'node["leisure"~"playground"](bbox);'
+        ]
+    };
     
-    return `[out:json][timeout:60];(${filters});out body;>;out skel qt;`;
-}
-
-function generateSampleOSMData(bbox) {
-    const [minLng, minLat, maxLng, maxLat] = bbox;
-    const centerLat = (minLat + maxLat) / 2;
-    const centerLng = (minLng + maxLng) / 2;
-    const latRange = maxLat - minLat;
-    const lngRange = maxLng - minLng;
+    let queries = [];
+    categories.forEach(cat => {
+        if (tagQueries[cat]) {
+            queries.push(...tagQueries[cat].map(q => q.replace('bbox', bboxStr)));
+        }
+    });
     
-    const elements = [];
-    let nodeId = 1000000;
-    let wayId = 2000000;
-    
-    // Generate sample nodes (POIs)
-    for (let i = 0; i < 15; i++) {
-        const lat = centerLat + (Math.random() - 0.5) * latRange * 0.8;
-        const lng = centerLng + (Math.random() - 0.5) * lngRange * 0.8;
-        
-        const amenityTypes = ['restaurant', 'cafe', 'shop', 'bank', 'pharmacy', 'hospital', 'school', 'park'];
-        const amenity = amenityTypes[Math.floor(Math.random() * amenityTypes.length)];
-        
-        elements.push({
-            type: 'node',
-            id: nodeId++,
-            lat: lat,
-            lon: lng,
-            tags: {
-                amenity: amenity,
-                name: `Sample ${amenity} ${i + 1}`
-            }
-        });
+    if (queries.length === 0) {
+        // Fallback to basic query if no categories match
+        queries.push(`way["highway"](${bboxStr});`);
     }
+    
+    const queryString = queries.join('\n  ');
+    
+    return `[out:json][timeout:90][bbox:${bboxStr}];
+(
+  ${queryString}
+);
+out body;
+>;
+out skel qt;`;
+}
     
     // Generate sample ways (roads)
     for (let i = 0; i < 8; i++) {
@@ -555,66 +573,97 @@ function processOSMData(data, polygon) {
     const nodes = {};
     const features = [];
     
-    // Index nodes
+    // Index all nodes first
     data.elements.filter(e => e.type === 'node').forEach(node => {
-        nodes[node.id] = [node.lon, node.lat];
+        nodes[node.id] = {
+            lon: node.lon,
+            lat: node.lat,
+            tags: node.tags || {}
+        };
     });
     
-    let processed = 0;
-    const total = data.elements.length;
+    console.log(`Processing ${data.elements.length} elements, ${Object.keys(nodes).length} nodes indexed`);
     
     data.elements.forEach(element => {
-        let geometry = null;
-        
-        if (element.type === 'node' && element.tags) {
-            geometry = { type: 'Point', coordinates: [element.lon, element.lat] };
-        } else if (element.type === 'way' && element.nodes) {
-            const coords = element.nodes.map(id => nodes[id]).filter(Boolean);
-            if (coords.length >= 2) {
-                const isClosed = coords.length >= 4 && 
-                    coords[0][0] === coords[coords.length-1][0] && 
-                    coords[0][1] === coords[coords.length-1][1];
-                geometry = isClosed
-                    ? { type: 'Polygon', coordinates: [coords] }
-                    : { type: 'LineString', coordinates: coords };
-            }
+        // Skip elements without proper tags
+        if (!element.tags || Object.keys(element.tags).length === 0) {
+            return;
         }
         
-        if (geometry && element.tags) {
-            const feature = {
-                type: 'Feature',
-                properties: { id: element.id, ...element.tags },
-                geometry
-            };
-            
-            // Check if within polygon
-            try {
-                let point;
-                if (geometry.type === 'Point') {
-                    point = turf.point(geometry.coordinates);
-                } else if (geometry.type === 'LineString') {
-                    const midIndex = Math.floor(geometry.coordinates.length / 2);
-                    point = turf.point(geometry.coordinates[midIndex]);
-                } else {
-                    point = turf.centroid(feature);
+        let geometry = null;
+        let centerPoint = null;
+        
+        try {
+            if (element.type === 'node') {
+                geometry = { 
+                    type: 'Point', 
+                    coordinates: [element.lon, element.lat] 
+                };
+                centerPoint = turf.point([element.lon, element.lat]);
+                
+            } else if (element.type === 'way' && element.nodes && element.nodes.length >= 2) {
+                const coords = element.nodes
+                    .map(id => nodes[id])
+                    .filter(n => n && n.lon !== undefined && n.lat !== undefined)
+                    .map(n => [n.lon, n.lat]);
+                
+                if (coords.length < 2) {
+                    console.warn(`Way ${element.id} has insufficient valid coordinates`);
+                    return;
                 }
                 
-                if (turf.booleanPointInPolygon(point, polygon)) {
-                    features.push(feature);
+                const isClosed = coords.length >= 4 && 
+                    Math.abs(coords[0][0] - coords[coords.length-1][0]) < 0.0000001 && 
+                    Math.abs(coords[0][1] - coords[coords.length-1][1]) < 0.0000001;
+                
+                if (isClosed && element.tags.building) {
+                    geometry = { type: 'Polygon', coordinates: [coords] };
+                } else if (isClosed && (element.tags.landuse || element.tags.natural || element.tags.leisure)) {
+                    geometry = { type: 'Polygon', coordinates: [coords] };
+                } else {
+                    geometry = { type: 'LineString', coordinates: coords };
                 }
-            } catch (e) {
-                console.warn('Error checking feature:', e);
+                
+                // Get center point for containment check
+                const midIndex = Math.floor(coords.length / 2);
+                centerPoint = turf.point(coords[midIndex]);
             }
+            
+            if (!geometry) return;
+            
+            // Check if feature is within polygon
+            if (centerPoint && turf.booleanPointInPolygon(centerPoint, polygon)) {
+                const feature = {
+                    type: 'Feature',
+                    properties: { 
+                        id: element.id,
+                        osm_type: element.type,
+                        ...element.tags 
+                    },
+                    geometry
+                };
+                
+                features.push(feature);
+            }
+            
+        } catch (e) {
+            console.warn(`Error processing element ${element.id}:`, e.message);
         }
-        
-        processed++;
     });
     
-    return { type: 'FeatureCollection', features };
+    console.log(`Extracted ${features.length} valid features within polygon`);
+    
+    return { 
+        type: 'FeatureCollection', 
+        features,
+        metadata: {
+            timestamp: new Date().toISOString(),
+            featureCount: features.length,
+            source: 'OpenStreetMap',
+            extractor: 'OSM Pentagram Boundary Extractor'
+        }
+    };
 }
-
-function displayResults(geojson, polygon) {
-    if (dataLayer) map.removeLayer(dataLayer);
     
     // Enhanced styling for mobile visibility
     dataLayer = L.geoJSON(geojson, {
@@ -1110,3 +1159,24 @@ window.addEventListener('resize', () => {
     clearTimeout(resizeTimeout);
     resizeTimeout = setTimeout(handleResize, 150);
 });
+function validateOSMData(data) {
+    if (!data || !data.elements || !Array.isArray(data.elements)) {
+        throw new Error('Invalid OSM data structure');
+    }
+    
+    if (data.elements.length === 0) {
+        throw new Error('No OSM data found in this area. Try a different location or categories.');
+    }
+    
+    // Check if we got actual data vs empty response
+    const validElements = data.elements.filter(e => e.tags && Object.keys(e.tags).length > 0);
+    if (validElements.length === 0) {
+        throw new Error('No tagged features found. Try selecting different categories.');
+    }
+    
+    console.log(`Validated: ${validElements.length} tagged elements out of ${data.elements.length} total`);
+    return true;
+}// After successful fetch, before processing:
+validateOSMData(data);
+progressFill.style.width = '70%';
+progressFill.textContent = 'Validated data...';
