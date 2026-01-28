@@ -71,15 +71,8 @@ function initMobileMenu() {
         e.stopPropagation();
     });
     
-    // Close sidebar when clicking map area on mobile
-    if (isMobile) {
-        document.getElementById('map').addEventListener('click', (e) => {
-            if (sidebar.classList.contains('open')) {
-                // Allow the map click to process first, then close sidebar
-                setTimeout(closeSidebar, 100);
-            }
-        });
-    }
+    // Don't auto-close sidebar when clicking map - use overlay instead
+    // This prevents the confusing behavior of sidebar disappearing unexpectedly
 }
 
 function toggleSidebar() {
@@ -92,6 +85,9 @@ function toggleSidebar() {
 }
 
 function openSidebar() {
+    // Ensure we're in mobile mode before applying mobile-specific behavior
+    if (!isMobile) return;
+    
     sidebar.classList.add('open');
     overlay.classList.add('active');
     menuToggle.classList.add('active');
@@ -110,9 +106,11 @@ function handleResize() {
     const wasMobile = isMobile;
     isMobile = detectMobile();
     
-    if (wasMobile && !isMobile) {
-        // Switched from mobile to desktop
-        closeSidebar();
+    if (wasMobile !== isMobile) {
+        // Mode changed - reset sidebar state appropriately
+        sidebar.classList.remove('open');
+        overlay.classList.remove('active');
+        menuToggle.classList.remove('active');
         document.body.style.overflow = 'auto';
     }
     
@@ -121,6 +119,10 @@ function handleResize() {
 }
 
 window.addEventListener('resize', handleResize);
+window.addEventListener('orientationchange', () => {
+    // Handle orientation changes on mobile
+    setTimeout(handleResize, 100);
+});
 
 // Initialize mobile menu
 initMobileMenu();
@@ -164,10 +166,8 @@ function handleMapClick(e) {
         navigator.vibrate(50);
     }
     
-    // Auto-close sidebar on mobile after adding point
-    if (isMobile && sidebar.classList.contains('open')) {
-        setTimeout(closeSidebar, 800);
-    }
+    // Keep sidebar open on mobile - don't auto-close
+    // User can close manually with overlay tap or hamburger
     
     showToast(`Point ${points.length} added`);
 }
