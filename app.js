@@ -1,25 +1,58 @@
 // Initialize map with mobile-optimized settings
-const map = L.map('map', {
-    tap: true,
-    tapTolerance: 15,
-    touchZoom: true,
-    doubleClickZoom: true,
-    boxZoom: true,
-    keyboard: true,
-    scrollWheelZoom: true,
-    bounceAtZoomLimits: false,
-    zoomSnap: 0.5,
-    zoomDelta: 0.5,
-    wheelPxPerZoomLevel: 60,
-    preferCanvas: false
-}).setView([40.7128, -74.0060], 12);
+let map;
+function initMap() {
+    // Ensure map container exists
+    const mapContainer = document.getElementById('map');
+    if (!mapContainer) {
+        console.error('Map container not found!');
+        return;
+    }
+    
+    map = L.map('map', {
+        tap: true,
+        tapTolerance: 15,
+        touchZoom: true,
+        doubleClickZoom: true,
+        boxZoom: true,
+        keyboard: true,
+        scrollWheelZoom: true,
+        bounceAtZoomLimits: false,
+        zoomSnap: 0.5,
+        zoomDelta: 0.5,
+        wheelPxPerZoomLevel: 60,
+        preferCanvas: false
+    }).setView([40.7128, -74.0060], 12);
 
-// Use higher quality tiles for better mobile experience
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OpenStreetMap contributors',
-    maxZoom: 19,
-    detectRetina: true
-}).addTo(map);
+    // Use higher quality tiles for better mobile experience
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19,
+        detectRetina: true
+    }).addTo(map);
+    
+    // Invalidate map size to ensure proper rendering
+    setTimeout(() => {
+        if (map) {
+            map.invalidateSize();
+        }
+    }, 100);
+    
+    // Set up click handler
+    map.on('click', handleMapClick);
+    
+    // Ensure map is ready for interaction
+    map.whenReady(() => {
+        console.log('Map is ready for interaction');
+        showToast('Click/tap map to add points!', 'info', 3000);
+    });
+}
+
+// Initialize map when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initMap);
+} else {
+    initMap();
+}
 
 // State
 let points = [];
@@ -173,7 +206,7 @@ function handleMapClick(e) {
 }
 
 // Simple event handler - works on both desktop and mobile
-map.on('click', handleMapClick);
+// (Click handler is now set up in initMap function)
 
 // Update max points
 numPointsInput.addEventListener('change', () => {
@@ -491,6 +524,17 @@ out body;
 >;
 out skel qt;`;
 }
+
+function generateSampleOSMData(bbox) {
+    const [minLng, minLat, maxLng, maxLat] = bbox;
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+    const latRange = maxLat - minLat;
+    const lngRange = maxLng - minLng;
+    
+    const elements = [];
+    let nodeId = 1;
+    let wayId = 1;
     
     // Generate sample ways (roads)
     for (let i = 0; i < 8; i++) {
@@ -664,6 +708,12 @@ function processOSMData(data, polygon) {
         }
     };
 }
+
+function displayResults(geojson, polygon) {
+    // Remove existing data layer if present
+    if (dataLayer) {
+        map.removeLayer(dataLayer);
+    }
     
     // Enhanced styling for mobile visibility
     dataLayer = L.geoJSON(geojson, {
@@ -1082,13 +1132,8 @@ console.log('Touch events supported:', 'ontouchstart' in window);
 console.log('Screen width:', window.innerWidth);
 console.log('User agent contains mobile:', /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(navigator.userAgent.toLowerCase()));
 console.log('Max touch points:', navigator.maxTouchPoints);
-console.log('Map initialized with click handler');
-
-// Ensure map is ready for interaction
-map.whenReady(() => {
-    console.log('Map is ready for interaction');
-    showToast('Click/tap map to add points!', 'info', 3000);
-});
+console.log('Map initialization function defined');
+// (Map ready callback is now set up in initMap function)
 
 // Add custom CSS for enhanced mobile styles
 const style = document.createElement('style');
