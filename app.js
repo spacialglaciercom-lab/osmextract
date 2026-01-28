@@ -1176,7 +1176,3 @@ function validateOSMData(data) {
     
     console.log(`Validated: ${validElements.length} tagged elements out of ${data.elements.length} total`);
     return true;
-}// After successful fetch, before processing:
-validateOSMData(data);
-progressFill.style.width = '70%';
-progressFill.textContent = 'Validated data...';
